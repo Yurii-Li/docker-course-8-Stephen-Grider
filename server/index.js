@@ -12,18 +12,21 @@ app.use(express.urlencoded({ extended: true }));
 
 // PG Client setup
 const pgClient = new Pool({
-  host: keys.pgHost,
-  port: keys.pgPort,
   user: keys.pgUser,
-  password: keys.pgPassword,
+  host: keys.pgHost,
   database: keys.pgDatabase,
+  password: keys.pgPassword,
+  port: keys.pgPort,
+  ssl:
+    process.env.NODE_ENV !== "production"
+      ? false
+      : { rejectUnauthorized: false },
 });
 
-pgClient.on("error", () => console.log("Lost PG connection"));
-
-pgClient.query("CREATE TABLE IF NOT EXISTS values (number INT)", (err, res) => {
-  if (err) console.log(err);
-  else console.log("Table created");
+pgClient.on("connect", (client) => {
+  client
+    .query("CREATE TABLE IF NOT EXISTS values (number INT)")
+    .catch((err) => console.error(err));
 });
 
 // Redis setup
@@ -36,12 +39,36 @@ const redisPublisher = redisClient.duplicate();
 
 // Express routes
 app.get("/", (req, res) => {
-  res.send("Hello World!");
+  res.send("Hi");
+});
+
+app.get("/values/all", async (req, res) => {
+  const values = await pgClient.query("SELECT * from values");
+  res.send(values.rows);
+});
+
+app.get("/values/current", async (req, res) => {
+  redisClient.hgetall("values", (err, values) => {
+    res.send(values);
+  });
 });
 
 app.post("/values", async (req, res) => {
   const index = req.body.index;
+
+  if (parseInt(index) > 40) {
+    return res.status(422).send("Index too high");
+  }
+
+  redisPublisher.hset("values", index, "Nothing yet");
   redisPublisher.publish("insert", index);
+
   pgClient.query("INSERT INTO values(number) VALUES($1)", [index]);
-  res.send("Success");
+
+  res.send({ working: true });
+});
+
+app.listen(5000, (err) => {
+  if (err) console.log(err);
+  console.log("Server running on port 5000");
 });
